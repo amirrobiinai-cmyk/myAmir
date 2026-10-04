@@ -23,13 +23,14 @@ const C = {
 const cv = document.getElementById("c");
 const ctx = cv.getContext("2d");
 
-// Optional real cutouts: drop presenter.png / nate.png (transparent PNG) next to this file.
-const imgs = {};
-for (const k of ["presenter", "nate"]) {
+// Footage: RGBA cutouts of the source clip, one PNG per output frame (footage/cut_####.png, made by cutout.py).
+let frameImg = null;
+window.setFrame = i => new Promise(res => {
   const im = new Image();
-  im.onload = () => { imgs[k] = im; };
-  im.src = k + ".png";
-}
+  im.onload = () => { frameImg = im; res(true); };
+  im.onerror = () => { frameImg = null; res(false); };
+  im.src = `footage/cut_${String(i).padStart(4, "0")}.png`;
+});
 
 // ---------- helpers ----------
 const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
@@ -129,121 +130,83 @@ function rimGlow(x, y, r, a) {
   ctx.fillRect(x - r, y - r, r * 2, r * 2);
 }
 
-// ---------- cutout person (stylised) ----------
-// pose: 0 = arms down, 1 = fists pumped up. Returns separate parts (union drawn via stroke-then-fill).
-function personParts(pose) {
-  const head = new Path2D();
-  head.ellipse(0, -560, 105, 128, 0, 0, Math.PI * 2);
-  const torso = new Path2D();
-  torso.moveTo(-48, -450); torso.lineTo(48, -450); torso.lineTo(55, -395);
-  torso.bezierCurveTo(150, -380, 240, -360, 275, -300);
-  torso.bezierCurveTo(290, -150, 270, 200, 260, 900);
-  torso.lineTo(-260, 900);
-  torso.bezierCurveTo(-270, 200, -290, -150, -275, -300);
-  torso.bezierCurveTo(-240, -360, -150, -380, -55, -395);
-  torso.closePath();
-  const k = pose;
-  // arms: thick round-capped polylines (shoulder -> elbow -> hand) + fist circle
-  const armW = lerp(120, 100, k);
-  const arms = [], fists = [];
-  for (const sg of [1, -1]) {
-    const l = new Path2D();
-    const hx = sg * lerp(285, 360, k), hy = lerp(330, -690, k);
-    l.moveTo(sg * 225, -300);
-    l.lineTo(sg * lerp(285, 440, k), lerp(0, -330, k));
-    l.lineTo(hx, hy);
-    arms.push(l);
-    const fr = 60 * clamp((k - 0.3) / 0.7);
-    if (fr > 0) { const f = new Path2D(); f.arc(hx, hy - 20, fr, 0, Math.PI * 2); fists.push(f); }
+// ---------- footage cutout ----------
+const FS = 1.12;               // display scale of the 1080x1080 source
+const mk = () => { const c = document.createElement("canvas"); c.width = c.height = 1080; return c; };
+const ocEdge = mk(), ocBody = mk(), ocSil = mk();
+// Builds GOLD CONTOUR (dilated alpha tinted gold) + graded body for the current frame.
+function prepCutout(img) {
+  let c = ocEdge.getContext("2d");
+  c.clearRect(0, 0, 1080, 1080);
+  c.globalCompositeOperation = "source-over";
+  const r = 3 / FS;
+  for (let k = 0; k < 16; k++) {
+    const an = k / 16 * Math.PI * 2;
+    c.drawImage(img, Math.cos(an) * r, Math.sin(an) * r);
   }
-  return { head, torso, arms, armW, fists };
-}
+  c.globalCompositeOperation = "source-in";
+  c.fillStyle = C.gold;
+  c.fillRect(0, 0, 1080, 1080);
 
-function drawPerson(x, y, s, opt = {}) {
-  const { pose = 0, contour = 1, shade = 1, img = null, flip = false } = opt;
+  c = ocBody.getContext("2d");
+  c.clearRect(0, 0, 1080, 1080);
+  c.globalCompositeOperation = "source-over";
+  c.filter = "contrast(1.08) saturate(1.05)";
+  c.drawImage(img, 0, 0);
+  c.filter = "none";
+  c.globalCompositeOperation = "source-atop";
+  // cool navy grade + warm gold rim light from both sides
+  c.fillStyle = "rgba(10,25,49,0.10)";
+  c.fillRect(0, 0, 1080, 1080);
+  const rl = c.createLinearGradient(0, 0, 1080, 0);
+  rl.addColorStop(0, "rgba(243,229,171,0.30)");
+  rl.addColorStop(0.18, "rgba(243,229,171,0)");
+  rl.addColorStop(0.82, "rgba(243,229,171,0)");
+  rl.addColorStop(1, "rgba(243,229,171,0.34)");
+  c.globalCompositeOperation = "lighter";
+  c.save(); c.globalCompositeOperation = "source-atop"; c.fillStyle = rl; c.fillRect(0, 0, 1080, 1080); c.restore();
+
+  fadeBottom(ocEdge); fadeBottom(ocBody);
+  c = ocSil.getContext("2d");
+  c.clearRect(0, 0, 1080, 1080);
+  c.globalCompositeOperation = "source-over";
+  c.drawImage(img, 0, 0);
+  c.globalCompositeOperation = "source-in";
+  const sg = c.createLinearGradient(0, 0, 0, 1080);
+  sg.addColorStop(0, "#1B2A44"); sg.addColorStop(1, "#050B17");
+  c.fillStyle = sg;
+  c.fillRect(0, 0, 1080, 1080);
+  fadeBottom(ocSil);
+}
+// Fades the bottom of the square source so the frame's cut edge dissolves into the backdrop.
+function fadeBottom(cv) {
+  const c = cv.getContext("2d");
+  c.save();
+  c.globalCompositeOperation = "destination-out";
+  const g = c.createLinearGradient(0, 780, 0, 1080);
+  g.addColorStop(0, "rgba(0,0,0,0)");
+  g.addColorStop(1, "rgba(0,0,0,1)");
+  c.fillStyle = g;
+  c.fillRect(0, 780, 1080, 300);
+  c.restore();
+}
+// Draws the cutout centred at x with its bottom at y (screen units).
+function drawCutout(x, y, s = 1, opt = {}) {
+  const { silhouette = false, contour = 1 } = opt;
+  const d = 1080 * FS * s;
   ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(flip ? -s : s, s);
-  if (img) {
-    // real cutout: fit image height ~ 1050 units, bottom at 300
-    const h = 1050, w = h * img.width / img.height;
-    if (contour > 0) {
-      ctx.save();
-      ctx.shadowColor = `rgba(212,175,55,${contour})`;
-      ctx.shadowBlur = 24;
-      for (const [dx, dy] of [[3,0],[-3,0],[0,3],[0,-3]]) {
-        ctx.drawImage(img, -w / 2 + dx, 300 - h + dy, w, h);
-      }
-      ctx.globalCompositeOperation = "source-atop";
-      ctx.fillStyle = C.gold;
-      ctx.fillRect(-w, -h, w * 2, h * 2);
-      ctx.restore();
-    }
-    ctx.drawImage(img, -w / 2, 300 - h, w, h);
-    ctx.restore();
-    return;
-  }
-  const { head, torso, arms, armW, fists } = personParts(pose);
-  const parts = [torso, head, ...fists];
-  ctx.lineJoin = "round"; ctx.lineCap = "round";
-  // GOLD CONTOUR: stroke union at +6 width, then fill over -> clean 3px outline
+  ctx.translate(x - d / 2, y - d);
+  ctx.scale(FS * s, FS * s);
   if (contour > 0) {
-    ctx.save();
-    ctx.strokeStyle = `rgba(212,175,55,${contour})`;
-    for (const pass of [0, 1]) {
-      ctx.shadowColor = `rgba(243,229,171,${contour})`;
-      ctx.shadowBlur = pass ? 0 : 22 / s;
-      ctx.lineWidth = armW + 6 / s;
-      for (const l of arms) ctx.stroke(l);
-      ctx.lineWidth = 6 / s;
-      for (const p of parts) ctx.stroke(p);
-    }
-    ctx.restore();
+    ctx.globalAlpha = contour;
+    ctx.shadowColor = "rgba(243,229,171,0.9)";
+    ctx.shadowBlur = 26;
+    ctx.drawImage(ocEdge, 0, 0);
+    ctx.shadowBlur = 0;
+    ctx.drawImage(ocEdge, 0, 0);
+    ctx.globalAlpha = 1;
   }
-  const g = ctx.createLinearGradient(-300, -700, 300, 300);
-  g.addColorStop(0, `rgb(${42 * shade},${48 * shade},${66 * shade})`);
-  g.addColorStop(0.5, `rgb(${18 * shade},${22 * shade},${34 * shade})`);
-  g.addColorStop(1, "rgb(6,9,18)");
-  ctx.strokeStyle = g;
-  ctx.lineWidth = armW;
-  for (const l of arms) ctx.stroke(l);
-  ctx.fillStyle = g;
-  for (const p of parts) ctx.fill(p);
-  // sleeve seam where arm meets torso
-  ctx.save();
-  ctx.clip(torso);
-  ctx.strokeStyle = `rgba(212,175,55,${0.22 * shade})`;
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(-175, -330); ctx.lineTo(-170, 100); ctx.moveTo(175, -330); ctx.lineTo(170, 100); ctx.stroke();
-  ctx.restore();
-  // suit details: shirt V, lapels, tie
-  ctx.save();
-  ctx.clip(torso);
-  ctx.fillStyle = `rgba(229,231,235,${0.85 * shade})`;
-  ctx.beginPath();
-  ctx.moveTo(-60, -400); ctx.lineTo(60, -400); ctx.lineTo(0, -230); ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = "#0A1931";
-  ctx.beginPath();
-  ctx.moveTo(-14, -395); ctx.lineTo(14, -395); ctx.lineTo(22, -250); ctx.lineTo(0, -205); ctx.lineTo(-22, -250); ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = `rgba(212,175,55,${0.5 * shade})`;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(-60, -400); ctx.lineTo(-120, -260); ctx.lineTo(-20, -60);
-  ctx.moveTo(60, -400); ctx.lineTo(120, -260); ctx.lineTo(20, -60);
-  ctx.stroke();
-  ctx.restore();
-  // rim light on the edges
-  ctx.save();
-  ctx.globalCompositeOperation = "lighter";
-  const rl = ctx.createLinearGradient(-460, 0, 460, 0);
-  rl.addColorStop(0, `rgba(212,175,55,${0.35 * shade})`);
-  rl.addColorStop(0.2, "rgba(212,175,55,0)");
-  rl.addColorStop(0.8, "rgba(212,175,55,0)");
-  rl.addColorStop(1, `rgba(243,229,171,${0.4 * shade})`);
-  for (const p of [torso, head]) { ctx.save(); ctx.clip(p); ctx.fillStyle = rl; ctx.fillRect(-500, -900, 1000, 1900); ctx.restore(); }
-  ctx.restore();
+  ctx.drawImage(silhouette ? ocSil : ocBody, 0, 0);
   ctx.restore();
 }
 
@@ -566,60 +529,53 @@ function drawMain(t) {
   brainNodes(t, t >= 4.5 && t < 7.0 ? easeOut(prog(t, 4.6, 5.2)) * (1 - prog(t, 6.8, 7.0)) : 0, W / 2, H * 0.34);
   ctx.restore();
 
-  // Beat 2: discs + team silhouettes
+  const hasFoot = frameImg && t < 9.4;
+  if (hasFoot) prepCutout(frameImg);
+  const footY = H * 0.9;
+
+  // Beat 2: team silhouettes (cutout shapes in navy with gold rim) fan out behind the presenter
   const b2 = t >= 2.0 && t < 4.5 ? easeOut(prog(t, 2.0, 2.4)) * (1 - prog(t, 4.35, 4.5)) : 0;
-  if (b2 > 0) {
+  rimGlow(W / 2, H * 0.45, 700, 1);
+  if (b2 > 0 && hasFoot) {
     ctx.save();
-    ctx.globalAlpha = b2;
-    // team silhouettes behind presenter
-    const team = [[-330, 0.62], [330, 0.62], [-170, 0.7], [170, 0.7]];
-    for (const [dx, s] of team) {
-      drawPerson(W / 2 + dx * lerp(0.4, 1, b2), H * 0.66 + 40, s, { contour: 0.55, shade: 0.55 });
+    ctx.globalAlpha = 0.85 * b2;
+    for (const [dx, dy, s] of [[-360, -110, 0.62], [360, -110, 0.62], [-210, -50, 0.76], [210, -50, 0.76]]) {
+      drawCutout(W / 2 + dx * b2, footY + dy, s, { silhouette: true, contour: 0.5 });
     }
     ctx.restore();
   }
 
-  // presenter position
-  let px = W / 2, ps = 1.0;
-  if (t >= 7.0) {
-    const k = easeInOut(prog(t, 7.0, 7.45));
-    px = lerp(W / 2, W / 2 + 190, k) * 1;
-    ps = lerp(1.0, 0.86, k);
-  }
-  const pose = t >= 8.6 ? easeOut(prog(t, 8.6, 8.85)) * (1 - 0.15 * Math.abs(Math.sin((t - 8.85) * 18)) * (t > 8.85 ? 1 : 0)) : 0;
-
-  // rim light behind presenter
-  rimGlow(px, H * 0.42, 620, 1);
-
-  // Nate slides in from left at 7.0
-  if (t >= 7.0) {
-    const k = easeOut(prog(t, 7.0, 7.45));
-    const nx = lerp(-400, W / 2 - 210, k);
-    rimGlow(nx, H * 0.46, 480, k);
-    drawPerson(nx, H * 0.72 + 30, 0.82, { contour: 1, img: imgs.nate, pose: pose, flip: true });
-  }
-
-  ctx.save();
-  ctx.translate(slide, 0);
-  drawPerson(px, H * 0.72, ps, { contour: 1, img: imgs.presenter, pose });
-  ctx.restore();
-
-  // Beat 2 discs in front / around
+  // Beat 2 polished gold discs orbiting behind the presenter
   if (b2 > 0) {
     ctx.save();
     ctx.globalAlpha = b2;
     for (let i = 0; i < 9; i++) {
       const an = i / 9 * Math.PI * 2 + t * 0.9;
-      const rx = 430 * b2, ry = 300 * b2;
-      const x = W / 2 + Math.cos(an) * rx, y = H * 0.38 + Math.sin(an) * ry;
+      const rx = 470 * b2, ry = 330 * b2;
+      const x = W / 2 + Math.cos(an) * rx, y = H * 0.36 + Math.sin(an) * ry;
       const r = 34 + rand(i + 60) * 30;
       goldDisc(x, y + Math.sin(t * 3 + i) * 14, r * (0.8 + 0.2 * Math.sin(an)), t * 2.5 + i);
     }
     ctx.restore();
   }
+  // presenter (and Nate, who walks in from the left inside the source clip at 7.0s)
+  if (hasFoot) {
+    ctx.save();
+    ctx.translate(slide, 0);
+    const enter = t >= 7.0 ? (1 - easeOut(prog(t, 7.0, 7.3))) * -260 : 0;
+    drawCutout(W / 2 + enter, footY, 1, { contour: 1 });
+    ctx.restore();
+  }
+
   ctx.restore(); // end camera
 
   // ---- text overlays (screen space, own punch) ----
+  const scrim = ctx.createLinearGradient(0, H * 0.68, 0, H);
+  scrim.addColorStop(0, "rgba(5,11,23,0)");
+  scrim.addColorStop(0.55, "rgba(5,11,23,0.72)");
+  scrim.addColorStop(1, "rgba(5,11,23,0.92)");
+  ctx.fillStyle = scrim;
+  ctx.fillRect(0, H * 0.68, W, H * 0.32);
   ctx.save();
   if (t < 2.0) badge("SYMMETRY CONFERENCE 2026", 0.25, t, H * 0.87);
   if (t >= 2.0 && t < 4.5) pillText("ELITE TEAM & FELLOWSHIP", 2.15, t, H * 0.85, { size: 78 });
@@ -628,14 +584,14 @@ function drawMain(t) {
     heroText("AI & NEXT-GEN TECH", 4.75, t, H * 0.85, { size: 118 });
     ctx.restore();
   }
-  if (t >= 7.0 && t < 8.95) pillText("COLLABORATE & GROW", 7.25, t, H * 0.85, { size: 88 });
+  if (t >= 7.0 && t < 8.8) pillText("COLLABORATE & GROW", 7.25, t, H * 0.85, { size: 88 });
   ctx.restore();
 
   // flash on beat cuts
   for (const tp of [2.0, 4.5, 7.0, 8.8]) {
     const k = prog(t, tp, tp + 0.18);
     if (t >= tp && k < 1) {
-      ctx.fillStyle = `rgba(243,229,171,${0.28 * (1 - k)})`;
+      ctx.fillStyle = `rgba(243,229,171,${0.2 * (1 - k)})`;
       ctx.fillRect(0, 0, W, H);
     }
   }

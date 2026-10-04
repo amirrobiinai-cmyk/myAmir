@@ -26,7 +26,7 @@ const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
 await page.goto(`http://localhost:${port}/index.html`);
 await page.evaluate(() => window.ready);
 
-const grab = t => page.evaluate(t => { window.render(t); return document.getElementById("c").toDataURL("image/png").split(",")[1]; }, t);
+const grab = t => page.evaluate(async t => { await window.setFrame(Math.round(t * 30)); window.render(t); return document.getElementById("c").toDataURL("image/png").split(",")[1]; }, t);
 
 if (stills) {
   const { writeFile, mkdir } = await import("node:fs/promises");

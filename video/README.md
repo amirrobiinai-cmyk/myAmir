@@ -10,5 +10,11 @@ node audio.mjs && node render.mjs          # full video
 node render.mjs --stills                   # preview PNGs in out/stills
 ```
 
-Real footage: put transparent cutouts `presenter.png` and `nate.png` next to `index.html`
-and they replace the stylised silhouettes (gold contour applied automatically).
+Footage: the presenter is cut out of the source clip with `cutout.py`
+(rembg `u2net_human_seg`, `pip install "rembg[cpu]"`), which writes `footage/cut_####.png`
+(git-ignored, ~450 MB). Edit map (output ← source): 0.0–2.0 ← 0.0, 2.0–4.5 ← 4.0,
+4.5–7.0 ← 8.5, 7.0–8.8 ← 14.9 (Nate walks in from the left), 8.8–9.4 ← 24.15 (fist pump).
+
+```
+python3 cutout.py path/to/source.mp4   # once, before render.mjs
+```
